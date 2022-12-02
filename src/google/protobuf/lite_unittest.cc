@@ -33,6 +33,7 @@
 #include <climits>
 #include <iostream>
 #include <string>
+#include <utility>
 
 #include "google/protobuf/stubs/logging.h"
 #include "google/protobuf/stubs/common.h"
@@ -50,6 +51,9 @@
 #include "google/protobuf/test_util_lite.h"
 #include "google/protobuf/unittest_lite.pb.h"
 #include "google/protobuf/wire_format_lite.h"
+
+// Must be included last
+#include "google/protobuf/port_def.inc"
 
 namespace google {
 namespace protobuf {
@@ -1250,6 +1254,54 @@ TEST(Lite, AliasedEnum) {
   EXPECT_EQ(protobuf_unittest::DupEnum::FOO2, value);
 }
 
+absl::Cord FragmentCord(const absl::Cord& src, size_t limit) {
+  absl::Cord dst;
+  auto append_chunk = [&dst](absl::string_view chunk) {
+    auto buffer = absl::CordBuffer::CreateWithDefaultLimit(chunk.size());
+    absl::Span<char> out = buffer.available_up_to(chunk.size());
+    GOOGLE_CHECK_EQ(out.size(), chunk.size());
+    memcpy(out.data(), chunk.data(), chunk.size());
+    buffer.SetLength(chunk.size());
+    dst.Append(std::move(buffer));
+  };
+  for (absl::string_view chunk : src.Chunks()) {
+    while (chunk.size() > limit) {
+      append_chunk(chunk.substr(0, limit));
+      chunk.remove_prefix(limit);
+    }
+    append_chunk(chunk);
+  }
+  return dst;
+}
+
+TEST(Lite, Cord) {
+  protobuf_unittest::TestAllTypesLite msg;
+  for (int i = 0; i < 128; i++) {
+    msg.add_repeated_cord(absl::Cord(std::string(14, 'a')));
+    msg.add_repeated_cord(absl::Cord(std::string(23, 'a')));
+    msg.add_repeated_cord(absl::Cord(std::string(31, 'a')));
+    msg.add_repeated_cord(absl::Cord(std::string(54, 'a')));
+  }
+  absl::Cord data = msg.SerializeAsCord();
+
+  // Case 1: Test ParseFromCord for the original data.
+  {
+    protobuf_unittest::TestAllTypesLite parsed_message;
+    EXPECT_TRUE(parsed_message.ParseFromCord(data));
+    io::CordInputStream stream(&data);
+    EXPECT_TRUE(parsed_message.ParseFromZeroCopyStream(&stream));
+  }
+
+  // Case 2: Test ParseFromCord for fragmented Cord created using Append(Cord).
+  for (int i = 1; i < 128; ++i) {
+    absl::Cord fragmented_data = FragmentCord(data, i);
+    protobuf_unittest::TestAllTypesLite parsed_message;
+    EXPECT_TRUE(parsed_message.ParseFromCord(fragmented_data));
+    io::CordInputStream stream(&fragmented_data);
+    EXPECT_TRUE(parsed_message.ParseFromZeroCopyStream(&stream));
+  }
+
+}
 
 TEST(Lite, CodedInputStreamRollback) {
   {

@@ -105,6 +105,30 @@ bool ZeroCopyInputStream::ReadCord(absl::Cord* cord, int count) {
   return true;
 }
 
+
+bool ZeroCopyOutputStream::WriteCord(const absl::Cord& cord) {
+  void* buffer = &buffer;  // Note: memcpy(null, ..., 0) is UB.
+  int buffer_size = 0;
+
+  for (absl::string_view fragment : cord.Chunks()) {
+    while (fragment.size() > static_cast<size_t>(buffer_size)) {
+      std::memcpy(buffer, fragment.data(), buffer_size);
+
+      fragment.remove_prefix(buffer_size);
+
+      if (!Next(&buffer, &buffer_size)) return false;
+    }
+    std::memcpy(buffer, fragment.data(), fragment.size());
+
+    // Advance the buffer.
+    buffer = static_cast<char*>(buffer) + fragment.size();
+    buffer_size -= fragment.size();
+  }
+  // Ensure we have called Next() before calling BackUp().
+  if (buffer_size > 0) BackUp(buffer_size);
+  return true;
+}
+
 bool ZeroCopyOutputStream::WriteAliasedRaw(const void* /* data */,
                                            int /* size */) {
   GOOGLE_LOG(FATAL) << "This ZeroCopyOutputStream doesn't support aliasing. "
